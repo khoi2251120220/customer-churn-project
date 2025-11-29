@@ -9,6 +9,7 @@ import numpy as np
 import joblib
 import sys
 import os
+from sklearn.preprocessing import StandardScaler, LabelEncoder
 
 # Cấu hình trang
 st.set_page_config(
@@ -24,13 +25,15 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODEL_PATH = os.path.join(BASE_DIR, 'models', 'churn_model.pkl')
 SCALER_PATH = os.path.join(BASE_DIR, 'models', 'scaler.pkl')
 FEATURE_NAMES_PATH = os.path.join(BASE_DIR, 'models', 'feature_names.pkl')
+LABEL_ENCODERS_PATH = os.path.join(BASE_DIR, 'models', 'label_encoders.pkl')
 
 @st.cache_resource
 def load_model():
-    """Load trained XGBoost model with scaler and feature names"""
+    """Load trained model with scaler, feature names, and label encoders"""
     model = None
     scaler = None
     feature_names = None
+    label_encoders = None
     
     try:
         # Try to load model
@@ -45,27 +48,108 @@ def load_model():
         if os.path.exists(FEATURE_NAMES_PATH):
             feature_names = joblib.load(FEATURE_NAMES_PATH)
         
+        # Try to load label encoders
+        if os.path.exists(LABEL_ENCODERS_PATH):
+            label_encoders = joblib.load(LABEL_ENCODERS_PATH)
+        
         if model is not None:
             # Model successfully loaded
-            if scaler is not None and feature_names is not None:
-                return model, scaler, feature_names, "✅ Model, Scaler, Feature Names loaded successfully"
+            if scaler is not None and feature_names is not None and label_encoders is not None:
+                return model, scaler, feature_names, label_encoders, "✅ Model, Scaler, Feature Names, Label Encoders loaded successfully"
             else:
-                # Model loaded but missing scaler/feature names
-                return model, scaler, feature_names, "⚠️ Model loaded but some components missing. Using fallback."
+                # Model loaded but missing some components
+                return model, scaler, feature_names, label_encoders, "⚠️ Model loaded but some components missing. Using fallback."
         else:
-            return None, None, None, "⚠️ Model not found. Using rule-based prediction."
+            return None, None, None, None, "⚠️ Model not found. Using rule-based prediction."
     
     except Exception as e:
-        return None, None, None, f"⚠️ Error loading model: {str(e)}. Using rule-based prediction."
+        return None, None, None, None, f"⚠️ Error loading model: {str(e)}. Using rule-based prediction."
 
-model, scaler, feature_names, model_status = load_model()
-use_ml_model = model is not None and scaler is not None and feature_names is not None
+model, scaler, feature_names, label_encoders, model_status = load_model()
+use_ml_model = model is not None and scaler is not None and feature_names is not None and label_encoders is not None
 
 # Display model status
 if use_ml_model:
     st.sidebar.success(model_status)
 else:
     st.sidebar.warning(model_status)
+
+# ==================== PREPROCESSING HELPER ====================
+def preprocess_customer_data(customer_data, scaler=None, feature_names=None, label_encoders=None):
+    """
+    Preprocess customer data giống như notebook
+    - Feature engineering
+    - Label Encoding (giống notebook)
+    - Scaling
+    """
+    df = pd.DataFrame([customer_data])
+    
+    # ===== FEATURE ENGINEERING =====
+    # tenure group
+    if 'tenure' in df.columns:
+        df['tenure_group'] = pd.cut(df['tenure'], 
+                                    bins=[0, 12, 24, 48, 72],
+                                    labels=['0-1 year', '1-2 years', '2-4 years', '4+ years'])
+    
+    # avg monthly charges
+    if 'TotalCharges' in df.columns and 'tenure' in df.columns:
+        df['avg_monthly_charges'] = df['TotalCharges'] / (df['tenure'] + 1)
+    
+    # Binary service features
+    service_cols = ['PhoneService', 'InternetService', 'OnlineSecurity', 
+                   'OnlineBackup', 'DeviceProtection', 'TechSupport', 
+                   'StreamingTV', 'StreamingMovies']
+    
+    for col in service_cols:
+        if col in df.columns:
+            df[f'{col}_binary'] = df[col].apply(lambda x: 1 if x == 'Yes' else 0)
+    
+    # ===== ENCODING - LABEL ENCODER (giống notebook) =====
+    df_encoded = df.copy()
+    
+    # Drop customerID if exists
+    if 'customerID' in df_encoded.columns:
+        df_encoded = df_encoded.drop('customerID', axis=1)
+    
+    # Map binary features (Yes/No → 1/0) BEFORE label encoding
+    binary_map = {'Yes': 1, 'No': 0}
+    binary_cols = ['SeniorCitizen', 'Partner', 'Dependents', 'PhoneService', 'PaperlessBilling']
+    for col in binary_cols:
+        if col in df_encoded.columns:
+            if df_encoded[col].dtype == 'object':
+                df_encoded[col] = df_encoded[col].map(binary_map).fillna(df_encoded[col])
+            # Nếu đã là numeric (0/1), skip
+    
+    # Label Encode categorical features (using loaded encoders) - SKIP binary columns
+    if label_encoders is not None:
+        binary_cols_set = set(binary_cols)
+        for col, encoder in label_encoders.items():
+            # Skip if it's a binary column (already encoded as 0/1)
+            if col not in binary_cols_set and col in df_encoded.columns:
+                try:
+                    # Only encode if still object type
+                    if df_encoded[col].dtype == 'object':
+                        df_encoded[col] = encoder.transform(df_encoded[col].astype(str))
+                except Exception as e:
+                    pass  # Skip silently if encoding fails
+    
+    # ===== SCALING =====
+    if scaler is not None and feature_names is not None:
+        try:
+            # Reorder columns to match feature names
+            df_encoded = df_encoded[feature_names]
+            
+            # Select numerical columns for scaling
+            numerical_cols = df_encoded.select_dtypes(include=[np.number]).columns
+            df_encoded[numerical_cols] = scaler.transform(df_encoded[numerical_cols])
+            
+            return df_encoded, None
+        except KeyError as e:
+            return None, f"Feature mismatch: {str(e)}"
+        except Exception as e:
+            return None, str(e)
+    
+    return df_encoded, None
 
 # CSS Custom - Thiết kế theo Figma
 st.markdown("""
@@ -445,6 +529,13 @@ with tab1:
             key="phone_single"
         )
         
+        multiple_lines = st.selectbox(
+            "Nhiều đường dây",
+            ["No", "Yes", "No phone service"],
+            format_func=lambda x: "Không" if x == "No" else ("Có" if x == "Yes" else "Không có dịch vụ"),
+            key="lines_single"
+        )
+        
         internet_service = st.selectbox(
             "Dịch vụ Internet",
             ["No", "DSL", "Fiber optic"],
@@ -570,6 +661,7 @@ with tab1:
                     'Dependents': dependents,
                     'tenure': tenure,
                     'PhoneService': phone_service,
+                    'MultipleLines': multiple_lines,
                     'InternetService': internet_service,
                     'OnlineSecurity': online_security,
                     'OnlineBackup': online_backup,
@@ -584,23 +676,22 @@ with tab1:
                     'TotalCharges': total_charges
                 }
                 
-                # Create DataFrame with correct feature names and order
-                df_customer = pd.DataFrame([customer_data])
+                # Preprocess customer data
+                df_processed, preprocess_error = preprocess_customer_data(
+                    customer_data, scaler, feature_names, label_encoders
+                )
                 
-                # Handle encoding if scaler is available
-                if scaler is not None and feature_names is not None:
-                    # Use loaded feature names
-                    df_customer = df_customer[feature_names]
-                    df_scaled = scaler.transform(df_customer)
-                    
-                    prediction = model.predict(df_scaled)[0]
-                    risk_score = model.predict_proba(df_scaled)[0][1]
+                if preprocess_error:
+                    st.error(f"❌ Lỗi tiền xử lý: {preprocess_error}")
+                    st.info("Chuyển sang Rule-based Prediction...")
+                    use_ml_model = False
                 else:
-                    # Fallback: try to predict without scaling
-                    prediction = model.predict(df_customer)[0]
-                    risk_score = model.predict_proba(df_customer)[0][1]
-                
-                st.info("✅ Dùng XGBoost Model từ Notebook")
+                    # Make prediction
+                    prediction = model.predict(df_processed)[0]
+                    risk_score = model.predict_proba(df_processed)[0][1]
+                    
+                    st.success("✅ Dùng Logistic Regression Model từ Notebook")
+            
             except Exception as e:
                 st.error(f"❌ Lỗi sử dụng model: {str(e)}")
                 st.info("Chuyển sang Rule-based Prediction...")
@@ -615,6 +706,7 @@ with tab1:
                 'Dependents': dependents,
                 'tenure': tenure,
                 'PhoneService': phone_service,
+                'MultipleLines': multiple_lines,
                 'InternetService': internet_service,
                 'OnlineSecurity': online_security,
                 'OnlineBackup': online_backup,
@@ -860,26 +952,38 @@ with tab2:
                 if use_ml_model:
                     # ===== USE TRAINED ML MODEL FOR BATCH PREDICTION =====
                     try:
-                        # Prepare features in correct order
-                        df_batch_prep = df_batch[feature_names].copy()
+                        # Preprocess batch data
+                        df_batch_processed_list = []
                         
-                        # Scale features
-                        df_batch_scaled = scaler.transform(df_batch_prep)
+                        for idx, row in df_batch.iterrows():
+                            customer_dict = row.to_dict()
+                            df_proc, proc_error = preprocess_customer_data(
+                                customer_dict, scaler, feature_names, label_encoders
+                            )
+                            
+                            if proc_error is None:
+                                df_batch_processed_list.append(df_proc)
                         
-                        # Get predictions
-                        predictions = model.predict(df_batch_scaled)
-                        probabilities = model.predict_proba(df_batch_scaled)[:, 1]
-                        
-                        for idx, (pred, proba) in enumerate(zip(predictions, probabilities)):
-                            results.append({
-                                'ID': idx + 1,
-                                'Khách hàng': f"KH_{idx+1:04d}",
-                                'Xác suất Churn': f"{proba*100:.1f}%",
-                                'Dự đoán': '🔴 CHURN' if pred == 1 else '✅ Ở LẠI',
-                                'Mức độ': '🔴 CAO' if proba > 0.7 else ('🟠 TRUNG BÌNH' if proba > 0.5 else '🟢 THẤP')
-                            })
-                        
-                        st.info("✅ Dùng XGBoost Model từ Notebook")
+                        if len(df_batch_processed_list) > 0:
+                            df_batch_processed = pd.concat(df_batch_processed_list, ignore_index=True)
+                            
+                            # Get predictions
+                            predictions = model.predict(df_batch_processed)
+                            probabilities = model.predict_proba(df_batch_processed)[:, 1]
+                            
+                            for idx, (pred, proba) in enumerate(zip(predictions, probabilities)):
+                                results.append({
+                                    'STT': idx + 1,
+                                    'Xác suất Churn': f"{proba*100:.1f}%",
+                                    'Dự đoán': '🔴 CHURN' if pred == 1 else '✅ Ở LẠI',
+                                    'Mức độ': '🔴 CAO' if proba > 0.7 else ('🟠 TRUNG BÌNH' if proba > 0.5 else '🟢 THẤP')
+                                })
+                            
+                            st.success("✅ Dùng Logistic Regression Model từ Notebook")
+                        else:
+                            st.error("❌ Không thể tiền xử lý dữ liệu batch")
+                            use_ml_model = False
+                    
                     except Exception as e:
                         st.error(f"❌ Lỗi khi sử dụng model: {str(e)}")
                         st.info("Chuyển sang mode Rule-based Prediction...")
