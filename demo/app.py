@@ -82,74 +82,98 @@ def preprocess_customer_data(customer_data, scaler=None, feature_names=None, lab
     - Label Encoding (giống notebook)
     - Scaling
     """
-    df = pd.DataFrame([customer_data])
+    try:
+        df = pd.DataFrame([customer_data])
+        
+        # ===== CONVERT NUMERIC COLUMNS =====
+        numeric_cols = ['tenure', 'MonthlyCharges', 'TotalCharges', 'SeniorCitizen']
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+        
+        # ===== IMPUTE MISSING VALUES =====
+        # Fill missing numeric values with median or 0
+        numeric_cols_to_fill = ['tenure', 'MonthlyCharges', 'TotalCharges']
+        for col in numeric_cols_to_fill:
+            if col in df.columns and df[col].isnull().any():
+                # Use 0 for missing tenure/charges (conservative approach)
+                df[col].fillna(0, inplace=True)
+        
+        # ===== FEATURE ENGINEERING =====
+        # tenure group - convert to string để label encoder có thể xử lý
+        if 'tenure' in df.columns:
+            tenure_group = pd.cut(df['tenure'], 
+                                 bins=[0, 12, 24, 48, 72],
+                                 labels=['0-1 year', '1-2 years', '2-4 years', '4+ years'])
+            df['tenure_group'] = tenure_group.astype(str)  # Convert to string
+        
+        # avg monthly charges
+        if 'TotalCharges' in df.columns and 'tenure' in df.columns:
+            df['avg_monthly_charges'] = df['TotalCharges'] / (df['tenure'] + 1)
+        
+        # Binary service features
+        service_cols = ['PhoneService', 'InternetService', 'OnlineSecurity', 
+                       'OnlineBackup', 'DeviceProtection', 'TechSupport', 
+                       'StreamingTV', 'StreamingMovies']
+        
+        for col in service_cols:
+            if col in df.columns:
+                df[f'{col}_binary'] = df[col].apply(lambda x: 1 if x == 'Yes' else 0)
+        
+        # ===== ENCODING - LABEL ENCODER (giống notebook) =====
+        df_encoded = df.copy()
+        
+        # Drop customerID if exists
+        if 'customerID' in df_encoded.columns:
+            df_encoded = df_encoded.drop('customerID', axis=1)
+        
+        # Map binary features (Yes/No → 1/0) BEFORE label encoding
+        binary_map = {'Yes': 1, 'No': 0}
+        binary_cols = ['SeniorCitizen', 'Partner', 'Dependents', 'PhoneService', 'PaperlessBilling']
+        for col in binary_cols:
+            if col in df_encoded.columns:
+                if df_encoded[col].dtype == 'object':
+                    df_encoded[col] = df_encoded[col].map(binary_map).fillna(df_encoded[col])
+                # Nếu đã là numeric (0/1), skip
+        
+        # Label Encode categorical features (using loaded encoders) - SKIP binary columns
+        if label_encoders is not None:
+            binary_cols_set = set(binary_cols)
+            for col, encoder in label_encoders.items():
+                # Skip if it's a binary column (already encoded as 0/1)
+                if col not in binary_cols_set and col in df_encoded.columns:
+                    try:
+                        # Only encode if still object type
+                        if df_encoded[col].dtype == 'object':
+                            df_encoded[col] = encoder.transform(df_encoded[col].astype(str))
+                    except Exception as e:
+                        return None, f"Label encoding error for column '{col}': {str(e)}"
+        
+        # ===== SCALING =====
+        if scaler is not None and feature_names is not None:
+            try:
+                # Check if all required feature names exist in the dataframe
+                missing_cols = [col for col in feature_names if col not in df_encoded.columns]
+                if missing_cols:
+                    return None, f"Missing columns: {missing_cols}"
+                
+                # Reorder columns to match feature names
+                df_encoded = df_encoded[feature_names]
+                
+                # Select numerical columns for scaling
+                numerical_cols = df_encoded.select_dtypes(include=[np.number]).columns
+                df_encoded[numerical_cols] = scaler.transform(df_encoded[numerical_cols])
+                
+                return df_encoded, None
+            except KeyError as e:
+                return None, f"Feature mismatch: {str(e)}"
+            except Exception as e:
+                return None, str(e)
+        
+        return df_encoded, None
     
-    # ===== FEATURE ENGINEERING =====
-    # tenure group
-    if 'tenure' in df.columns:
-        df['tenure_group'] = pd.cut(df['tenure'], 
-                                    bins=[0, 12, 24, 48, 72],
-                                    labels=['0-1 year', '1-2 years', '2-4 years', '4+ years'])
-    
-    # avg monthly charges
-    if 'TotalCharges' in df.columns and 'tenure' in df.columns:
-        df['avg_monthly_charges'] = df['TotalCharges'] / (df['tenure'] + 1)
-    
-    # Binary service features
-    service_cols = ['PhoneService', 'InternetService', 'OnlineSecurity', 
-                   'OnlineBackup', 'DeviceProtection', 'TechSupport', 
-                   'StreamingTV', 'StreamingMovies']
-    
-    for col in service_cols:
-        if col in df.columns:
-            df[f'{col}_binary'] = df[col].apply(lambda x: 1 if x == 'Yes' else 0)
-    
-    # ===== ENCODING - LABEL ENCODER (giống notebook) =====
-    df_encoded = df.copy()
-    
-    # Drop customerID if exists
-    if 'customerID' in df_encoded.columns:
-        df_encoded = df_encoded.drop('customerID', axis=1)
-    
-    # Map binary features (Yes/No → 1/0) BEFORE label encoding
-    binary_map = {'Yes': 1, 'No': 0}
-    binary_cols = ['SeniorCitizen', 'Partner', 'Dependents', 'PhoneService', 'PaperlessBilling']
-    for col in binary_cols:
-        if col in df_encoded.columns:
-            if df_encoded[col].dtype == 'object':
-                df_encoded[col] = df_encoded[col].map(binary_map).fillna(df_encoded[col])
-            # Nếu đã là numeric (0/1), skip
-    
-    # Label Encode categorical features (using loaded encoders) - SKIP binary columns
-    if label_encoders is not None:
-        binary_cols_set = set(binary_cols)
-        for col, encoder in label_encoders.items():
-            # Skip if it's a binary column (already encoded as 0/1)
-            if col not in binary_cols_set and col in df_encoded.columns:
-                try:
-                    # Only encode if still object type
-                    if df_encoded[col].dtype == 'object':
-                        df_encoded[col] = encoder.transform(df_encoded[col].astype(str))
-                except Exception as e:
-                    pass  # Skip silently if encoding fails
-    
-    # ===== SCALING =====
-    if scaler is not None and feature_names is not None:
-        try:
-            # Reorder columns to match feature names
-            df_encoded = df_encoded[feature_names]
-            
-            # Select numerical columns for scaling
-            numerical_cols = df_encoded.select_dtypes(include=[np.number]).columns
-            df_encoded[numerical_cols] = scaler.transform(df_encoded[numerical_cols])
-            
-            return df_encoded, None
-        except KeyError as e:
-            return None, f"Feature mismatch: {str(e)}"
-        except Exception as e:
-            return None, str(e)
-    
-    return df_encoded, None
+    except Exception as e:
+        return None, f"Preprocessing error: {str(e)}"
 
 # CSS Custom - Thiết kế theo Figma
 st.markdown("""
@@ -921,6 +945,13 @@ with tab2:
     st.markdown('<div class="form-section">', unsafe_allow_html=True)
     st.markdown('<p class="form-title">📤 Tải lên file CSV để dự đoán hàng loạt</p>', unsafe_allow_html=True)
     
+    # Show required columns
+    st.info("📋 **Yêu cầu:** File CSV phải chứa các cột sau: ")
+    st.code("""gender, SeniorCitizen, Partner, Dependents, tenure, PhoneService, MultipleLines,
+InternetService, OnlineSecurity, OnlineBackup, DeviceProtection, TechSupport,
+StreamingTV, StreamingMovies, Contract, PaperlessBilling, PaymentMethod,
+MonthlyCharges, TotalCharges""", language="text")
+    
     uploaded_file = st.file_uploader("Chọn file CSV", type=['csv'], key="batch_file")
     
     if uploaded_file is not None:
@@ -928,6 +959,67 @@ with tab2:
             df_batch = pd.read_csv(uploaded_file)
             
             st.success(f"✅ Đã tải thành công {len(df_batch)} khách hàng")
+            
+            # VALIDATION: Check if CSV has the required columns
+            required_cols = ['gender', 'SeniorCitizen', 'Partner', 'Dependents', 'tenure', 
+                           'PhoneService', 'MultipleLines', 'InternetService', 'OnlineSecurity', 
+                           'OnlineBackup', 'DeviceProtection', 'TechSupport', 'StreamingTV', 
+                           'StreamingMovies', 'Contract', 'PaperlessBilling', 'PaymentMethod', 
+                           'MonthlyCharges', 'TotalCharges']
+            
+            missing_cols = [col for col in required_cols if col not in df_batch.columns]
+            
+            if missing_cols:
+                st.error(f"""
+                ❌ **File CSV không phù hợp!**
+                
+                **Cột bị thiếu:** {', '.join(missing_cols)}
+                
+                **Lý do:** Mô hình này được huấn luyện trên **Telco Customer Churn Dataset**, không phải các dataset khác (ngân hàng, thương mại điện tử, v.v.)
+                
+                **Giải pháp:** 
+                1. Tải file CSV từ **Telco Customer Churn Dataset** trên Kaggle
+                2. Hoặc sử dụng file mẫu bên dưới
+                """)
+                
+                # Provide a template example
+                st.markdown("---")
+                st.subheader("📥 Tải file mẫu Telco Customer Churn", divider="blue")
+                
+                template_data = {
+                    'gender': ['Female', 'Male'],
+                    'SeniorCitizen': [0, 1],
+                    'Partner': ['Yes', 'No'],
+                    'Dependents': ['No', 'Yes'],
+                    'tenure': [12, 24],
+                    'PhoneService': ['Yes', 'No'],
+                    'MultipleLines': ['Yes', 'No'],
+                    'InternetService': ['Fiber optic', 'DSL'],
+                    'OnlineSecurity': ['Yes', 'No'],
+                    'OnlineBackup': ['Yes', 'No'],
+                    'DeviceProtection': ['Yes', 'No'],
+                    'TechSupport': ['Yes', 'No'],
+                    'StreamingTV': ['Yes', 'No'],
+                    'StreamingMovies': ['Yes', 'No'],
+                    'Contract': ['Month-to-month', 'One year'],
+                    'PaperlessBilling': ['Yes', 'No'],
+                    'PaymentMethod': ['Electronic check', 'Mailed check'],
+                    'MonthlyCharges': [65.5, 89.0],
+                    'TotalCharges': [780.0, 2136.0]
+                }
+                template_df = pd.DataFrame(template_data)
+                
+                st.write("**Ví dụ định dạng dữ liệu đúng:**")
+                st.dataframe(template_df, use_container_width=True)
+                
+                csv_template = template_df.to_csv(index=False)
+                st.download_button(
+                    label="📥 Tải file mẫu (CSV)",
+                    data=csv_template,
+                    file_name="telco_churn_template.csv",
+                    mime="text/csv"
+                )
+                st.stop()
             
             st.subheader("📋 Xem trước dữ liệu", divider="blue")
             st.dataframe(df_batch.head(10), use_container_width=True)
@@ -952,17 +1044,35 @@ with tab2:
                 if use_ml_model:
                     # ===== USE TRAINED ML MODEL FOR BATCH PREDICTION =====
                     try:
-                        # Preprocess batch data
+                        # Debug: Show feature names expected
+                        st.info(f"🔍 Expected columns: {feature_names}")
+                        st.info(f"📋 Actual CSV columns: {df_batch.columns.tolist()}")
+                        
+                        # Preprocess batch data with error tracking
                         df_batch_processed_list = []
+                        error_rows = []
+                        success_rows = []
                         
                         for idx, row in df_batch.iterrows():
-                            customer_dict = row.to_dict()
-                            df_proc, proc_error = preprocess_customer_data(
-                                customer_dict, scaler, feature_names, label_encoders
-                            )
-                            
-                            if proc_error is None:
-                                df_batch_processed_list.append(df_proc)
+                            try:
+                                customer_dict = row.to_dict()
+                                df_proc, proc_error = preprocess_customer_data(
+                                    customer_dict, scaler, feature_names, label_encoders
+                                )
+                                
+                                if proc_error is None and df_proc is not None:
+                                    df_batch_processed_list.append(df_proc)
+                                    success_rows.append(idx)
+                                else:
+                                    error_rows.append((idx, proc_error))
+                            except Exception as row_error:
+                                # Track problematic row with error
+                                error_rows.append((idx, str(row_error)))
+                        
+                        # Show processing summary
+                        st.info(f"✅ Processed: {len(success_rows)} rows | ❌ Failed: {len(error_rows)} rows")
+                        if error_rows and len(error_rows) <= 5:
+                            st.error(f"First error: Row {error_rows[0][0]} - {error_rows[0][1]}")
                         
                         if len(df_batch_processed_list) > 0:
                             df_batch_processed = pd.concat(df_batch_processed_list, ignore_index=True)
@@ -979,14 +1089,15 @@ with tab2:
                                     'Mức độ': '🔴 CAO' if proba > 0.7 else ('🟠 TRUNG BÌNH' if proba > 0.5 else '🟢 THẤP')
                                 })
                             
-                            st.success("✅ Dùng Logistic Regression Model từ Notebook")
+                            st.success(f"✅ Dùng Logistic Regression Model từ Notebook ({len(results)} khách hàng)")
                         else:
-                            st.error("❌ Không thể tiền xử lý dữ liệu batch")
+                            st.warning("⚠️ Không thể xử lý dữ liệu batch - tất cả rows có lỗi. Chuyển sang Rule-based")
                             use_ml_model = False
                     
                     except Exception as e:
-                        st.error(f"❌ Lỗi khi sử dụng model: {str(e)}")
-                        st.info("Chuyển sang mode Rule-based Prediction...")
+                        st.error(f"❌ Lỗi xử lý batch: {str(e)}")
+                        import traceback
+                        st.error(traceback.format_exc())
                         use_ml_model = False
                 
                 if not use_ml_model or len(results) == 0:
