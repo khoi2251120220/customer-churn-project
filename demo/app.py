@@ -18,6 +18,53 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# ==================== LOAD MODEL ====================
+MODEL_PATH = '../models/churn_model.pkl'
+SCALER_PATH = '../models/scaler.pkl'
+FEATURE_NAMES_PATH = '../models/feature_names.pkl'
+
+@st.cache_resource
+def load_model():
+    """Load trained XGBoost model with scaler and feature names"""
+    model = None
+    scaler = None
+    feature_names = None
+    
+    try:
+        # Try to load model
+        if os.path.exists(MODEL_PATH):
+            model = joblib.load(MODEL_PATH)
+        
+        # Try to load scaler
+        if os.path.exists(SCALER_PATH):
+            scaler = joblib.load(SCALER_PATH)
+        
+        # Try to load feature names
+        if os.path.exists(FEATURE_NAMES_PATH):
+            feature_names = joblib.load(FEATURE_NAMES_PATH)
+        
+        if model is not None:
+            # Model successfully loaded
+            if scaler is not None and feature_names is not None:
+                return model, scaler, feature_names, "✅ Model, Scaler, Feature Names loaded successfully"
+            else:
+                # Model loaded but missing scaler/feature names
+                return model, scaler, feature_names, "⚠️ Model loaded but some components missing. Using fallback."
+        else:
+            return None, None, None, "⚠️ Model not found. Using rule-based prediction."
+    
+    except Exception as e:
+        return None, None, None, f"⚠️ Error loading model: {str(e)}. Using rule-based prediction."
+
+model, scaler, feature_names, model_status = load_model()
+use_ml_model = model is not None and scaler is not None and feature_names is not None
+
+# Display model status
+if use_ml_model:
+    st.sidebar.success(model_status)
+else:
+    st.sidebar.warning(model_status)
+
 # CSS Custom - Thiết kế theo Figma
 st.markdown("""
     <style>
@@ -511,45 +558,95 @@ with tab1:
     
     # ==================== PREDICTION LOGIC ====================
     if predict_button:
-        customer_data = {
-            'gender': gender,
-            'SeniorCitizen': 1 if senior_citizen == "Yes" else 0,
-            'Partner': partner,
-            'Dependents': dependents,
-            'tenure': tenure,
-            'PhoneService': phone_service,
-            'InternetService': internet_service,
-            'OnlineSecurity': online_security,
-            'OnlineBackup': online_backup,
-            'DeviceProtection': device_protection,
-            'TechSupport': tech_support,
-            'StreamingTV': streaming_tv,
-            'StreamingMovies': streaming_movies,
-            'Contract': contract,
-            'PaperlessBilling': paperless_billing,
-            'PaymentMethod': payment_method,
-            'MonthlyCharges': monthly_charges,
-            'TotalCharges': total_charges
-        }
+        if use_ml_model:
+            # ===== USE TRAINED ML MODEL =====
+            try:
+                customer_data = {
+                    'gender': gender,
+                    'SeniorCitizen': 1 if senior_citizen == "Yes" else 0,
+                    'Partner': partner,
+                    'Dependents': dependents,
+                    'tenure': tenure,
+                    'PhoneService': phone_service,
+                    'InternetService': internet_service,
+                    'OnlineSecurity': online_security,
+                    'OnlineBackup': online_backup,
+                    'DeviceProtection': device_protection,
+                    'TechSupport': tech_support,
+                    'StreamingTV': streaming_tv,
+                    'StreamingMovies': streaming_movies,
+                    'Contract': contract,
+                    'PaperlessBilling': paperless_billing,
+                    'PaymentMethod': payment_method,
+                    'MonthlyCharges': monthly_charges,
+                    'TotalCharges': total_charges
+                }
+                
+                # Create DataFrame with correct feature names and order
+                df_customer = pd.DataFrame([customer_data])
+                
+                # Handle encoding if scaler is available
+                if scaler is not None and feature_names is not None:
+                    # Use loaded feature names
+                    df_customer = df_customer[feature_names]
+                    df_scaled = scaler.transform(df_customer)
+                    
+                    prediction = model.predict(df_scaled)[0]
+                    risk_score = model.predict_proba(df_scaled)[0][1]
+                else:
+                    # Fallback: try to predict without scaling
+                    prediction = model.predict(df_customer)[0]
+                    risk_score = model.predict_proba(df_customer)[0][1]
+                
+                st.info("✅ Dùng XGBoost Model từ Notebook")
+            except Exception as e:
+                st.error(f"❌ Lỗi sử dụng model: {str(e)}")
+                st.info("Chuyển sang Rule-based Prediction...")
+                use_ml_model = False
         
-        # Calculate risk score
-        risk_score = 0.3
-        
-        if contract == "Month-to-month":
-            risk_score += 0.3
-        if tenure < 12:
-            risk_score += 0.2
-        if internet_service == "Fiber optic":
-            risk_score += 0.1
-        if payment_method == "Electronic check":
-            risk_score += 0.15
-        if monthly_charges > 80:
-            risk_score += 0.1
-        if online_security == "No" and internet_service != "No":
-            risk_score += 0.05
-        
-        risk_score = min(risk_score, 0.95)
-        prediction = 1 if risk_score > 0.5 else 0
+        if not use_ml_model:
+            # ===== FALLBACK: USE RULE-BASED PREDICTION =====
+            customer_data = {
+                'gender': gender,
+                'SeniorCitizen': 1 if senior_citizen == "Yes" else 0,
+                'Partner': partner,
+                'Dependents': dependents,
+                'tenure': tenure,
+                'PhoneService': phone_service,
+                'InternetService': internet_service,
+                'OnlineSecurity': online_security,
+                'OnlineBackup': online_backup,
+                'DeviceProtection': device_protection,
+                'TechSupport': tech_support,
+                'StreamingTV': streaming_tv,
+                'StreamingMovies': streaming_movies,
+                'Contract': contract,
+                'PaperlessBilling': paperless_billing,
+                'PaymentMethod': payment_method,
+                'MonthlyCharges': monthly_charges,
+                'TotalCharges': total_charges
+            }
+            
+            # Calculate risk score (rule-based fallback)
+            risk_score = 0.3
+            
+            if contract == "Month-to-month":
+                risk_score += 0.3
+            if tenure < 12:
+                risk_score += 0.2
+            if internet_service == "Fiber optic":
+                risk_score += 0.1
+            if payment_method == "Electronic check":
+                risk_score += 0.15
+            if monthly_charges > 80:
+                risk_score += 0.1
+            if online_security == "No" and internet_service != "No":
+                risk_score += 0.05
+            
+            risk_score = min(risk_score, 0.95)
+            prediction = 1 if risk_score > 0.5 else 0
+            
+            st.warning("⚠️ Dùng Rule-based Prediction (Model chưa được training)")
         
         # ==================== RESULTS SECTION ====================
         st.markdown("<hr>", unsafe_allow_html=True)
@@ -757,16 +854,65 @@ with tab2:
                 
                 # Create results dataframe
                 results = []
-                for idx, row in df_batch.iterrows():
-                    risk = np.random.uniform(0.2, 0.9)
-                    pred = 1 if risk > 0.5 else 0
-                    results.append({
-                        'ID': idx + 1,
-                        'Khách hàng': f"KH_{idx+1:04d}",
-                        'Xác suất Churn': f"{risk*100:.1f}%",
-                        'Dự đoán': '🔴 CHURN' if pred == 1 else '✅ Ở LẠI',
-                        'Mức độ': '🔴 CAO' if risk > 0.7 else ('🟠 TRUNG BÌNH' if risk > 0.5 else '🟢 THẤP')
-                    })
+                
+                if use_ml_model:
+                    # ===== USE TRAINED ML MODEL FOR BATCH PREDICTION =====
+                    try:
+                        # Prepare features in correct order
+                        df_batch_prep = df_batch[feature_names].copy()
+                        
+                        # Scale features
+                        df_batch_scaled = scaler.transform(df_batch_prep)
+                        
+                        # Get predictions
+                        predictions = model.predict(df_batch_scaled)
+                        probabilities = model.predict_proba(df_batch_scaled)[:, 1]
+                        
+                        for idx, (pred, proba) in enumerate(zip(predictions, probabilities)):
+                            results.append({
+                                'ID': idx + 1,
+                                'Khách hàng': f"KH_{idx+1:04d}",
+                                'Xác suất Churn': f"{proba*100:.1f}%",
+                                'Dự đoán': '🔴 CHURN' if pred == 1 else '✅ Ở LẠI',
+                                'Mức độ': '🔴 CAO' if proba > 0.7 else ('🟠 TRUNG BÌNH' if proba > 0.5 else '🟢 THẤP')
+                            })
+                        
+                        st.info("✅ Dùng XGBoost Model từ Notebook")
+                    except Exception as e:
+                        st.error(f"❌ Lỗi khi sử dụng model: {str(e)}")
+                        st.info("Chuyển sang mode Rule-based Prediction...")
+                        use_ml_model = False
+                
+                if not use_ml_model or len(results) == 0:
+                    # ===== FALLBACK: USE RULE-BASED PREDICTION FOR BATCH =====
+                    for idx, row in df_batch.iterrows():
+                        # Calculate risk score based on rules
+                        risk = 0.3
+                        
+                        if 'Contract' in row and row['Contract'] == "Month-to-month":
+                            risk += 0.3
+                        if 'tenure' in row and row['tenure'] < 12:
+                            risk += 0.2
+                        if 'InternetService' in row and row['InternetService'] == "Fiber optic":
+                            risk += 0.1
+                        if 'PaymentMethod' in row and row['PaymentMethod'] == "Electronic check":
+                            risk += 0.15
+                        if 'MonthlyCharges' in row and row['MonthlyCharges'] > 80:
+                            risk += 0.1
+                        if 'OnlineSecurity' in row and row['OnlineSecurity'] == "No":
+                            risk += 0.05
+                        
+                        risk = min(risk, 0.95)
+                        pred = 1 if risk > 0.5 else 0
+                        results.append({
+                            'ID': idx + 1,
+                            'Khách hàng': f"KH_{idx+1:04d}",
+                            'Xác suất Churn': f"{risk*100:.1f}%",
+                            'Dự đoán': '🔴 CHURN' if pred == 1 else '✅ Ở LẠI',
+                            'Mức độ': '🔴 CAO' if risk > 0.7 else ('🟠 TRUNG BÌNH' if risk > 0.5 else '🟢 THẤP')
+                        })
+                    
+                    st.warning("⚠️ Dùng Rule-based Prediction (Model chưa được training)")
                 
                 results_df = pd.DataFrame(results)
                 st.dataframe(results_df, use_container_width=True, hide_index=True)
