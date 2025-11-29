@@ -19,9 +19,11 @@ st.set_page_config(
 )
 
 # ==================== LOAD MODEL ====================
-MODEL_PATH = '../models/churn_model.pkl'
-SCALER_PATH = '../models/scaler.pkl'
-FEATURE_NAMES_PATH = '../models/feature_names.pkl'
+import os
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+MODEL_PATH = os.path.join(BASE_DIR, 'models', 'churn_model.pkl')
+SCALER_PATH = os.path.join(BASE_DIR, 'models', 'scaler.pkl')
+FEATURE_NAMES_PATH = os.path.join(BASE_DIR, 'models', 'feature_names.pkl')
 
 @st.cache_resource
 def load_model():
